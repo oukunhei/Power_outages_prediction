@@ -25,8 +25,8 @@
 也可以直接运行：
 
 ```powershell
-uv run outage-prediction build-legacy --config config/project.yaml
-uv run streamlit run app/streamlit_app.py
+uv run python -m outage_prediction build-legacy --config config/project.yaml
+uv run python -m streamlit run app/streamlit_app.py
 ```
 
 前端默认地址为 `http://localhost:8501`，页面不提供日期、情景、阈值或模型选择器。

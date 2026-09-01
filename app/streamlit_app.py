@@ -6,10 +6,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.colors import sample_colorscale
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_DIR = PROJECT_ROOT / "outputs" / "latest"
@@ -49,6 +49,10 @@ def load_release() -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
         )
     data = pd.read_csv(required[0])
     geojson = json.loads(required[1].read_text(encoding="utf-8"))
+    # Plotly's browser renderer is more reliable with a top-level GeoJSON feature ID
+    # than with a nested property lookup, especially for MapLibre traces.
+    for feature in geojson["features"]:
+        feature["id"] = str(feature["properties"]["iso3"])
     manifest = json.loads(required[2].read_text(encoding="utf-8"))
     return data, geojson, manifest
 
@@ -75,80 +79,99 @@ def _event_iso(event: Any) -> str | None:
     return None
 
 
+MAP_COLORSCALE = [
+    [0.0, "#2878B5"],
+    [0.45, "#F5F7F6"],
+    [0.68, "#F9C66B"],
+    [1.0, "#C83E3A"],
+]
+
+
+def _geometry_coordinates(
+    geometry: dict[str, Any],
+) -> tuple[list[float | None], list[float | None]]:
+    polygons = (
+        [geometry["coordinates"]]
+        if geometry["type"] == "Polygon"
+        else geometry["coordinates"]
+    )
+    longitudes: list[float | None] = []
+    latitudes: list[float | None] = []
+    for polygon in polygons:
+        exterior = polygon[0]
+        longitudes.extend(point[0] for point in exterior)
+        latitudes.extend(point[1] for point in exterior)
+        longitudes.append(None)
+        latitudes.append(None)
+    return longitudes, latitudes
+
+
 def build_map(data: pd.DataFrame, geojson: dict[str, Any]) -> go.Figure:
-    feature_rows = []
+    risk_by_iso = data.set_index("iso3", drop=False)
+    scored = data["risk_score"].dropna()
+    color_limit = max(float(scored.abs().max()), 1e-9)
+    figure = go.Figure()
+
     for feature in geojson["features"]:
         properties = feature.get("properties", {})
-        feature_rows.append(
-            (
-                properties.get("iso3"),
-                properties.get("country_name") or properties.get("name") or "未知地区",
+        iso3 = str(properties["iso3"])
+        country_name = properties.get("country_name") or properties.get("name") or "未知地区"
+        longitudes, latitudes = _geometry_coordinates(feature["geometry"])
+        row = risk_by_iso.loc[iso3] if iso3 in risk_by_iso.index else None
+        has_score = row is not None and pd.notna(row["risk_score"])
+
+        if has_score:
+            normalized = (float(row["risk_score"]) / color_limit + 1.0) / 2.0
+            fill_color = sample_colorscale(MAP_COLORSCALE, [min(max(normalized, 0.0), 1.0)])[0]
+            hover = (
+                f"<b>{country_name}</b><br>"
+                f"相对风险：{row['risk_score']:.4f}<br>"
+                f"气候直接贡献占比：{row['climate_share_abs']:.1%}<br>"
+                f"新能源交互贡献占比：{row['renewable_share_abs']:.1%}"
+                "<extra></extra>"
+            )
+        else:
+            fill_color = "#D9DEE5"
+            hover = f"<b>{country_name}</b><br>数据不足<extra></extra>"
+
+        figure.add_trace(
+            go.Scatter(
+                x=longitudes,
+                y=latitudes,
+                mode="lines",
+                fill="toself",
+                fillcolor=fill_color,
+                line={"color": "white", "width": 0.45},
+                customdata=[[iso3] for _ in longitudes],
+                hoveron="fills",
+                hovertemplate=hover,
+                name=country_name,
+                showlegend=False,
             )
         )
-    boundaries = pd.DataFrame(feature_rows, columns=["iso3", "country_name"])
-    scored = data.loc[data["risk_score"].notna()].copy()
 
-    figure = go.Figure()
+    # An invisible marker trace supplies the continuous color bar without a map service.
     figure.add_trace(
-        go.Choropleth(
-            geojson=geojson,
-            featureidkey="properties.iso3",
-            locations=boundaries["iso3"],
-            z=np.zeros(len(boundaries)),
-            customdata=boundaries[["iso3", "country_name"]],
-            colorscale=[[0, "#D9DEE5"], [1, "#D9DEE5"]],
-            showscale=False,
-            marker_line_color="white",
-            marker_line_width=0.35,
-            hovertemplate="<b>%{customdata[1]}</b><br>数据不足<extra></extra>",
-            name="数据不足",
-        )
-    )
-    custom_columns = [
-        "iso3",
-        "country_name",
-        "climate_share_abs",
-        "renewable_share_abs",
-        "climate_contribution",
-        "renewable_interaction_contribution",
-    ]
-    figure.add_trace(
-        go.Choropleth(
-            geojson=geojson,
-            featureidkey="properties.iso3",
-            locations=scored["iso3"],
-            z=scored["risk_score"],
-            customdata=scored[custom_columns],
-            colorscale=[
-                [0.0, "#2878B5"],
-                [0.45, "#F5F7F6"],
-                [0.68, "#F9C66B"],
-                [1.0, "#C83E3A"],
-            ],
-            zmid=0,
-            marker_line_color="white",
-            marker_line_width=0.35,
-            colorbar={
-                "title": {"text": "相对风险得分", "side": "right"},
-                "thickness": 13,
-                "len": 0.58,
-                "outlinewidth": 0,
+        go.Scatter(
+            x=[None, None],
+            y=[None, None],
+            mode="markers",
+            marker={
+                "color": [-color_limit, color_limit],
+                "cmin": -color_limit,
+                "cmax": color_limit,
+                "colorscale": MAP_COLORSCALE,
+                "showscale": True,
+                "colorbar": {
+                    "title": {"text": "相对风险得分", "side": "right"},
+                    "thickness": 13,
+                    "len": 0.58,
+                    "outlinewidth": 0,
+                },
             },
-            hovertemplate=(
-                "<b>%{customdata[1]}</b><br>"
-                "相对风险：%{z:.4f}<br>"
-                "气候直接贡献占比：%{customdata[2]:.1%}<br>"
-                "新能源交互贡献占比：%{customdata[3]:.1%}"
-                "<extra></extra>"
-            ),
-            name="相对风险",
+            hoverinfo="skip",
+            showlegend=False,
         )
-    )
-    figure.update_geos(
-        fitbounds="locations",
-        visible=False,
-        projection_type="natural earth",
-        bgcolor="rgba(0,0,0,0)",
     )
     figure.update_layout(
         height=590,
@@ -158,6 +181,20 @@ def build_map(data: pd.DataFrame, geojson: dict[str, Any]) -> go.Figure:
         clickmode="event+select",
         dragmode="pan",
         showlegend=False,
+        xaxis={
+            "range": [-180, 180],
+            "visible": False,
+            "showgrid": False,
+            "zeroline": False,
+        },
+        yaxis={
+            "range": [-60, 90],
+            "visible": False,
+            "showgrid": False,
+            "zeroline": False,
+            "scaleanchor": "x",
+            "scaleratio": 1,
+        },
     )
     return figure
 
@@ -174,7 +211,7 @@ try:
     risk_data, world_geojson, run_manifest = load_release()
 except FileNotFoundError as error:
     st.error(str(error))
-    st.code("uv run outage-prediction build-legacy --config config/project.yaml")
+    st.code("uv run python -m outage_prediction build-legacy --config config/project.yaml")
     st.stop()
 
 st.title("全球停电相对风险分布")
@@ -189,6 +226,7 @@ map_event = st.plotly_chart(
     on_select="rerun",
     selection_mode="points",
     key="risk_map",
+    config={"scrollZoom": True, "displaylogo": False},
 )
 clicked_iso = _event_iso(map_event)
 
