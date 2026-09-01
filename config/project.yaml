@@ -1,0 +1,27 @@
+project:
+  title: 全球停电相对风险分布
+  climate_scenario: CMIP5 / RCP4.5
+  climate_year: 2100
+
+thresholds:
+  drought_days: 30.0
+  cooling_degree_days: 300.0
+  heating_degree_days: 3000.0
+
+risk_model:
+  type: formula
+  version: legacy-formula-v1
+  artifact_path: null
+
+paths:
+  legacy_parameters: data/legacy/parameters.xlsx
+  legacy_cooling: data/legacy/cdd_country.csv
+  legacy_heating: data/legacy/hdd_country.csv
+  legacy_drought: data/legacy/dry_country.csv
+  world_boundaries: data/reference/world-administrative-boundaries.shp
+  output_root: outputs
+
+sources:
+  energy: Global Energy Monitor（旧项目国家级能源结构快照）
+  climate: Copernicus Climate Change Service / Climate Data Store
+  boundary: United Nations world administrative boundaries（项目既有快照）

@@ -1,0 +1,32 @@
+# Isolated Python environment
+.venv/
+
+# Secrets
+.env
+.cdsapirc
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# One-time downloaded source data and generated artifacts
+data/raw/
+data/climate/raw/
+data/interim/
+data/processed/
+outputs/
+
+# Local logs and temporary files
+logs/
+*.log
+*.tmp
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
