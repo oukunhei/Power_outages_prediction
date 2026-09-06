@@ -25,6 +25,9 @@ def test_afghanistan_reproduces_known_legacy_result() -> None:
         result["climate_contribution"] + result["renewable_interaction_contribution"],
         abs_tol=1e-12,
     )
+    term_columns = [column for column in result.index if column.startswith("term_")]
+    assert len(term_columns) == 12
+    assert math.isclose(result["risk_score"], result[term_columns].sum(), abs_tol=1e-12)
 
 
 def test_zero_contributions_have_zero_shares() -> None:

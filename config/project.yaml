@@ -14,6 +14,10 @@ risk_model:
   artifact_path: null
 
 paths:
+  gem_snapshot: data/Global Integrated Power August 2026-v3.xlsx
+  climate_drought: data/climate/raw/annual_consecutive_dry_days/cdd_CMIP5_rcp45_yr_2006-2100.nc
+  climate_cooling: data/climate/raw/annual_cooling_degree_days/cd_CMIP5_rcp45_yr_2006-2100.nc
+  climate_heating: data/climate/raw/annual_heating_degree_days/hd_CMIP5_rcp45_yr_2006-2100.nc
   legacy_parameters: data/legacy/parameters.xlsx
   legacy_cooling: data/legacy/cdd_country.csv
   legacy_heating: data/legacy/hdd_country.csv
@@ -21,7 +25,19 @@ paths:
   world_boundaries: data/reference/world-administrative-boundaries.shp
   output_root: outputs
 
+energy:
+  included_statuses:
+    - operating
+  share_denominator: all tracked operating power facilities
+
+climate:
+  expected_members: 28
+  expected_start_year: 2006
+  expected_end_year: 2100
+  aggregation: country_area_weighted_then_ensemble_median
+  small_region_fallback: nearest_grid_cell
+
 sources:
-  energy: Global Energy Monitor（旧项目国家级能源结构快照）
+  energy: Global Energy Monitor / Global Integrated Power Tracker, August 2026 release
   climate: Copernicus Climate Change Service / Climate Data Store
   boundary: United Nations world administrative boundaries（项目既有快照）

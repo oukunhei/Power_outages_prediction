@@ -1,4 +1,4 @@
-"""Build a reproducible frontend release from the original project aggregates."""
+"""Orchestrate full raw-data builds and legacy regression checks."""
 
 from __future__ import annotations
 
@@ -10,16 +10,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import geopandas as gpd
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.colors import TwoSlopeNorm
 
 from outage_prediction.config import load_config, resolve_project_path
+from outage_prediction.processing.climate import ClimateIndicator, build_climate_features
+from outage_prediction.processing.energy import build_energy_features
+from outage_prediction.processing.spatial import load_world_boundaries
 from outage_prediction.scoring.registry import create_risk_model
-
-BOUNDARY_ISO_ALIASES = {"IMY": "IMN"}
+from outage_prediction.visualization.static_map import render_static_map
 
 
 def _sha256(path: Path) -> str:
@@ -139,13 +138,7 @@ def _build_corrected_features(
     return frame
 
 
-def _prepare_boundaries(boundary_path: Path, results: pd.DataFrame) -> gpd.GeoDataFrame:
-    boundaries = gpd.read_file(boundary_path).to_crs("EPSG:4326")
-    boundaries = boundaries.loc[boundaries["iso3"].notna(), ["iso3", "name", "geometry"]].copy()
-    boundaries["iso3"] = boundaries["iso3"].replace(BOUNDARY_ISO_ALIASES)
-    boundaries["geometry"] = boundaries.geometry.make_valid()
-    boundaries = boundaries.dissolve(by="iso3", aggfunc="first").reset_index()
-    boundaries["geometry"] = boundaries.geometry.simplify(0.04, preserve_topology=True)
+def _map_frame(boundaries: pd.DataFrame, results: pd.DataFrame) -> Any:
     display_columns = [
         "iso3",
         "country_name",
@@ -156,56 +149,187 @@ def _prepare_boundaries(boundary_path: Path, results: pd.DataFrame) -> gpd.GeoDa
         "renewable_share_abs",
         "data_quality",
     ]
-    merged = boundaries.merge(results[display_columns], on="iso3", how="left")
-    merged["country_name"] = merged["country_name"].fillna(merged["name"])
+    merged = boundaries[["iso3", "boundary_name", "geometry"]].merge(
+        results[display_columns], on="iso3", how="left", validate="one_to_one"
+    )
+    merged["country_name"] = merged["country_name"].fillna(merged["boundary_name"])
     merged["data_quality"] = merged["data_quality"].fillna("unavailable")
+    merged["geometry"] = merged.geometry.simplify(0.04, preserve_topology=True)
     return merged
-
-
-def _render_static_map(world: gpd.GeoDataFrame, output_path: Path) -> None:
-    scored = world["risk_score"].dropna()
-    if scored.empty:
-        raise ValueError("No valid risk scores are available for the static map")
-    lower = float(scored.min())
-    upper = float(scored.max())
-    norm = TwoSlopeNorm(vmin=min(lower, -1e-9), vcenter=0.0, vmax=max(upper, 1e-9))
-    figure, axis = plt.subplots(figsize=(15, 8.5), constrained_layout=True)
-    world.plot(
-        column="risk_score",
-        ax=axis,
-        cmap="RdYlBu_r",
-        norm=norm,
-        linewidth=0.18,
-        edgecolor="white",
-        missing_kwds={"color": "#D9DEE5", "label": "Data unavailable"},
-    )
-    axis.set_axis_off()
-    axis.set_title("Global Relative Power Outage Risk", fontsize=20, pad=14)
-    axis.text(
-        0.0,
-        -0.02,
-        "CMIP5 / RCP4.5 · fixed year 2100 · HDD threshold: 3000 degree-days\n"
-        "Sources: Global Energy Monitor; Copernicus Climate Data Store",
-        transform=axis.transAxes,
-        fontsize=9,
-        color="#485568",
-    )
-    scalar = plt.cm.ScalarMappable(norm=norm, cmap="RdYlBu_r")
-    colorbar = figure.colorbar(scalar, ax=axis, orientation="horizontal", shrink=0.48, pad=0.025)
-    colorbar.set_label("Relative risk score (not probability)")
-    figure.savefig(output_path, dpi=300, facecolor="white")
-    plt.close(figure)
 
 
 def _publish(staging: Path, output_root: Path) -> Path:
     latest = output_root / "latest"
     archive = output_root / "archive"
     archive.mkdir(parents=True, exist_ok=True)
+    archived: Path | None = None
     if latest.exists():
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        shutil.move(str(latest), str(archive / timestamp))
-    shutil.move(str(staging), str(latest))
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        archived = archive / timestamp
+        shutil.move(str(latest), str(archived))
+    try:
+        shutil.move(str(staging), str(latest))
+    except Exception:
+        if archived is not None and archived.exists() and not latest.exists():
+            shutil.move(str(archived), str(latest))
+        raise
     return latest
+
+
+def _input_record(project_root: Path, configured_path: str) -> dict[str, str | int]:
+    path = resolve_project_path(project_root, configured_path)
+    return {
+        "path": str(path.relative_to(project_root)),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def build_release(config_path: Path, project_root: Path) -> Path:
+    """Build production outputs directly from the raw GIPT and CMIP5 snapshots."""
+    config = load_config(config_path)
+    paths = config["paths"]
+    project = config["project"]
+    thresholds = config["thresholds"]
+    model = create_risk_model(config["risk_model"])
+
+    boundary_path = resolve_project_path(project_root, paths["world_boundaries"])
+    boundaries = load_world_boundaries(boundary_path)
+    energy = build_energy_features(
+        resolve_project_path(project_root, paths["gem_snapshot"]),
+        list(config["energy"]["included_statuses"]),
+    )
+    indicators = [
+        ClimateIndicator(
+            path=resolve_project_path(project_root, paths["climate_drought"]),
+            variable="cdd",
+            output_column="dry",
+            expected_unit_tokens=("day",),
+        ),
+        ClimateIndicator(
+            path=resolve_project_path(project_root, paths["climate_cooling"]),
+            variable="cd",
+            output_column="cdd",
+            expected_unit_tokens=("degc", "day"),
+        ),
+        ClimateIndicator(
+            path=resolve_project_path(project_root, paths["climate_heating"]),
+            variable="hd",
+            output_column="hdd",
+            expected_unit_tokens=("degc", "day"),
+        ),
+    ]
+    climate = build_climate_features(
+        indicators=indicators,
+        boundaries=boundaries,
+        year=int(project["climate_year"]),
+        expected_members=int(config["climate"]["expected_members"]),
+        expected_start_year=int(config["climate"]["expected_start_year"]),
+        expected_end_year=int(config["climate"]["expected_end_year"]),
+        thresholds=thresholds,
+    )
+
+    results = boundaries[["iso3", "boundary_name"]].copy()
+    results = results.merge(energy.features, on="iso3", how="left", validate="one_to_one")
+    results = results.merge(climate.features, on="iso3", how="left", validate="one_to_one")
+    results["country_name"] = results["gem_country"].fillna(results["boundary_name"])
+
+    energy_columns = ["pv_share", "wind_share", "hydro_share"]
+    climate_columns = ["dry", "cdd", "hdd", "drought", "heat", "cold"]
+    has_energy = results[energy_columns].notna().all(axis=1)
+    has_climate = results[climate_columns].notna().all(axis=1)
+    results["data_quality"] = np.select(
+        [has_energy & has_climate, ~has_energy & has_climate, has_energy & ~has_climate],
+        ["complete", "missing_energy", "missing_climate"],
+        default="unavailable",
+    )
+    predictions = model.predict(results)
+    results = pd.concat([results, predictions], axis=1)
+    results["energy_release"] = "GIPT August 2026 v3"
+    results["energy_status_scope"] = ", ".join(config["energy"]["included_statuses"])
+    results["climate_scenario"] = project["climate_scenario"]
+    results["climate_year"] = int(project["climate_year"])
+    results["hdd_threshold"] = float(thresholds["heating_degree_days"])
+    results["dry_days"] = results["dry"]
+    results["cooling_degree_days"] = results["cdd"]
+    results["heating_degree_days"] = results["hdd"]
+
+    complete = results["data_quality"].eq("complete")
+    if not complete.any():
+        raise RuntimeError("The full pipeline produced no complete country risk rows")
+    decomposition_error = (
+        results.loc[complete, "risk_score"]
+        - results.loc[complete, "climate_contribution"]
+        - results.loc[complete, "renewable_interaction_contribution"]
+    ).abs()
+    if bool((decomposition_error > 1e-12).any()):
+        raise RuntimeError("Risk decomposition validation failed")
+
+    world = _map_frame(boundaries, results)
+    output_root = resolve_project_path(project_root, paths["output_root"])
+    output_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="build-", dir=output_root) as temporary:
+        staging = Path(temporary) / "release"
+        staging.mkdir()
+        results.to_csv(staging / "country_risk.csv", index=False)
+        results.to_parquet(staging / "country_risk.parquet", index=False)
+        energy.features.to_parquet(staging / "energy_features.parquet", index=False)
+        climate.features.to_parquet(staging / "climate_features.parquet", index=False)
+        world.to_file(staging / "country_risk.geojson", driver="GeoJSON")
+        render_static_map(
+            world,
+            staging / "power_outage_risk.png",
+            scenario=str(project["climate_scenario"]),
+            year=int(project["climate_year"]),
+            hdd_threshold=float(thresholds["heating_degree_days"]),
+        )
+
+        legacy_report: dict[str, Any] | None = None
+        legacy_path = resolve_project_path(project_root, paths["legacy_parameters"])
+        if legacy_path.is_file():
+            legacy, legacy_report = reproduce_legacy_results(legacy_path, model)
+            legacy.to_csv(staging / "legacy_formula_reproduction.csv", index=False)
+
+        inputs = {
+            key: _input_record(project_root, paths[key])
+            for key in [
+                "gem_snapshot",
+                "climate_drought",
+                "climate_cooling",
+                "climate_heating",
+                "world_boundaries",
+            ]
+        }
+        energy_not_mapped = sorted(set(energy.features["iso3"]) - set(boundaries["iso3"]))
+        manifest = {
+            "pipeline": "full_raw_snapshots_v1",
+            "created_at_utc": datetime.now(UTC).isoformat(),
+            "project": project,
+            "thresholds": thresholds,
+            "risk_model": {"name": model.name, "version": model.version},
+            "energy_processing": energy.report,
+            "climate_processing": climate.report,
+            "legacy_formula_reproduction": legacy_report,
+            "published_rows": int(len(results)),
+            "complete_rows": int(complete.sum()),
+            "missing_energy_rows": int((~has_energy).sum()),
+            "missing_climate_rows": int((~has_climate).sum()),
+            "energy_iso3_without_boundary": energy_not_mapped,
+            "maximum_decomposition_error": float(decomposition_error.max()),
+            "inputs": inputs,
+            "sources": config["sources"],
+        }
+        (staging / "energy_quality_report.json").write_text(
+            json.dumps(energy.report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (staging / "climate_quality_report.json").write_text(
+            json.dumps(climate.report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (staging / "run_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        published = _publish(staging, output_root)
+    return published
 
 
 def build_legacy_release(config_path: Path, project_root: Path) -> Path:
@@ -222,7 +346,8 @@ def build_legacy_release(config_path: Path, project_root: Path) -> Path:
     results["hdd_threshold"] = float(config["thresholds"]["heating_degree_days"])
 
     boundary_path = resolve_project_path(project_root, paths["world_boundaries"])
-    world = _prepare_boundaries(boundary_path, results)
+    boundaries = load_world_boundaries(boundary_path)
+    world = _map_frame(boundaries, results)
     output_root = resolve_project_path(project_root, paths["output_root"])
     output_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="build-", dir=output_root) as temporary:
@@ -232,7 +357,13 @@ def build_legacy_release(config_path: Path, project_root: Path) -> Path:
         results.to_parquet(staging / "country_risk.parquet", index=False)
         legacy.to_csv(staging / "legacy_formula_reproduction.csv", index=False)
         world.to_file(staging / "country_risk.geojson", driver="GeoJSON")
-        _render_static_map(world, staging / "power_outage_risk.png")
+        render_static_map(
+            world,
+            staging / "power_outage_risk.png",
+            scenario=str(config["project"]["climate_scenario"]),
+            year=int(config["project"]["climate_year"]),
+            hdd_threshold=float(config["thresholds"]["heating_degree_days"]),
+        )
 
         complete = results["data_quality"].eq("complete")
         changed = (

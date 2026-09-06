@@ -41,17 +41,24 @@ class FormulaRiskModel:
         wind = values["wind_share"]
         hydro = values["hydro_share"]
 
-        climate = -0.0019 * d - 0.0057 * h + 0.0063 * c
-        renewable = (
-            0.0413 * d * hydro
-            - 0.0030 * h * hydro
-            - 0.0116 * c * hydro
-            - 0.0196 * d * wind
-            + 0.01801 * h * wind
-            + 0.0398 * c * wind
-            + 0.2084 * d * pv
-            + 0.0764 * h * pv
-            + 0.4810 * c * pv
+        terms = {
+            "term_drought": -0.0019 * d,
+            "term_heat": -0.0057 * h,
+            "term_cold": 0.0063 * c,
+            "term_drought_hydro": 0.0413 * d * hydro,
+            "term_heat_hydro": -0.0030 * h * hydro,
+            "term_cold_hydro": -0.0116 * c * hydro,
+            "term_drought_wind": -0.0196 * d * wind,
+            "term_heat_wind": 0.01801 * h * wind,
+            "term_cold_wind": 0.0398 * c * wind,
+            "term_drought_pv": 0.2084 * d * pv,
+            "term_heat_pv": 0.0764 * h * pv,
+            "term_cold_pv": 0.4810 * c * pv,
+        }
+        climate = terms["term_drought"] + terms["term_heat"] + terms["term_cold"]
+        climate_terms = {"term_drought", "term_heat", "term_cold"}
+        renewable = sum(
+            value for name, value in terms.items() if name not in climate_terms
         )
         risk = climate + renewable
         denominator = climate.abs() + renewable.abs()
@@ -60,6 +67,7 @@ class FormulaRiskModel:
 
         return pd.DataFrame(
             {
+                **terms,
                 "risk_score": risk,
                 "climate_contribution": climate,
                 "renewable_interaction_contribution": renewable,

@@ -9,7 +9,8 @@ from typing import Any
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from plotly.colors import sample_colorscale
+
+from outage_prediction.visualization.interactive_map import build_interactive_map
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_DIR = PROJECT_ROOT / "outputs" / "latest"
@@ -36,7 +37,8 @@ st.markdown(
 
 
 @st.cache_data(show_spinner=False)
-def load_release() -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
+def load_release(release_version: int) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
+    del release_version  # Cache key changes whenever the manifest is rebuilt.
     required = [
         RELEASE_DIR / "country_risk.csv",
         RELEASE_DIR / "country_risk.geojson",
@@ -49,8 +51,7 @@ def load_release() -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
         )
     data = pd.read_csv(required[0])
     geojson = json.loads(required[1].read_text(encoding="utf-8"))
-    # Plotly's browser renderer is more reliable with a top-level GeoJSON feature ID
-    # than with a nested property lookup, especially for MapLibre traces.
+    # A stable top-level feature ID is retained for downloads and future map renderers.
     for feature in geojson["features"]:
         feature["id"] = str(feature["properties"]["iso3"])
     manifest = json.loads(required[2].read_text(encoding="utf-8"))
@@ -79,126 +80,6 @@ def _event_iso(event: Any) -> str | None:
     return None
 
 
-MAP_COLORSCALE = [
-    [0.0, "#2878B5"],
-    [0.45, "#F5F7F6"],
-    [0.68, "#F9C66B"],
-    [1.0, "#C83E3A"],
-]
-
-
-def _geometry_coordinates(
-    geometry: dict[str, Any],
-) -> tuple[list[float | None], list[float | None]]:
-    polygons = (
-        [geometry["coordinates"]]
-        if geometry["type"] == "Polygon"
-        else geometry["coordinates"]
-    )
-    longitudes: list[float | None] = []
-    latitudes: list[float | None] = []
-    for polygon in polygons:
-        exterior = polygon[0]
-        longitudes.extend(point[0] for point in exterior)
-        latitudes.extend(point[1] for point in exterior)
-        longitudes.append(None)
-        latitudes.append(None)
-    return longitudes, latitudes
-
-
-def build_map(data: pd.DataFrame, geojson: dict[str, Any]) -> go.Figure:
-    risk_by_iso = data.set_index("iso3", drop=False)
-    scored = data["risk_score"].dropna()
-    color_limit = max(float(scored.abs().max()), 1e-9)
-    figure = go.Figure()
-
-    for feature in geojson["features"]:
-        properties = feature.get("properties", {})
-        iso3 = str(properties["iso3"])
-        country_name = properties.get("country_name") or properties.get("name") or "未知地区"
-        longitudes, latitudes = _geometry_coordinates(feature["geometry"])
-        row = risk_by_iso.loc[iso3] if iso3 in risk_by_iso.index else None
-        has_score = row is not None and pd.notna(row["risk_score"])
-
-        if has_score:
-            normalized = (float(row["risk_score"]) / color_limit + 1.0) / 2.0
-            fill_color = sample_colorscale(MAP_COLORSCALE, [min(max(normalized, 0.0), 1.0)])[0]
-            hover = (
-                f"<b>{country_name}</b><br>"
-                f"相对风险：{row['risk_score']:.4f}<br>"
-                f"气候直接贡献占比：{row['climate_share_abs']:.1%}<br>"
-                f"新能源交互贡献占比：{row['renewable_share_abs']:.1%}"
-                "<extra></extra>"
-            )
-        else:
-            fill_color = "#D9DEE5"
-            hover = f"<b>{country_name}</b><br>数据不足<extra></extra>"
-
-        figure.add_trace(
-            go.Scatter(
-                x=longitudes,
-                y=latitudes,
-                mode="lines",
-                fill="toself",
-                fillcolor=fill_color,
-                line={"color": "white", "width": 0.45},
-                customdata=[[iso3] for _ in longitudes],
-                hoveron="fills",
-                hovertemplate=hover,
-                name=country_name,
-                showlegend=False,
-            )
-        )
-
-    # An invisible marker trace supplies the continuous color bar without a map service.
-    figure.add_trace(
-        go.Scatter(
-            x=[None, None],
-            y=[None, None],
-            mode="markers",
-            marker={
-                "color": [-color_limit, color_limit],
-                "cmin": -color_limit,
-                "cmax": color_limit,
-                "colorscale": MAP_COLORSCALE,
-                "showscale": True,
-                "colorbar": {
-                    "title": {"text": "相对风险得分", "side": "right"},
-                    "thickness": 13,
-                    "len": 0.58,
-                    "outlinewidth": 0,
-                },
-            },
-            hoverinfo="skip",
-            showlegend=False,
-        )
-    )
-    figure.update_layout(
-        height=590,
-        margin={"l": 0, "r": 0, "t": 8, "b": 0},
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        clickmode="event+select",
-        dragmode="pan",
-        showlegend=False,
-        xaxis={
-            "range": [-180, 180],
-            "visible": False,
-            "showgrid": False,
-            "zeroline": False,
-        },
-        yaxis={
-            "range": [-60, 90],
-            "visible": False,
-            "showgrid": False,
-            "zeroline": False,
-            "scaleanchor": "x",
-            "scaleratio": 1,
-        },
-    )
-    return figure
-
-
 def _signed_description(value: float) -> str:
     if value > 0:
         return "增加风险"
@@ -208,20 +89,22 @@ def _signed_description(value: float) -> str:
 
 
 try:
-    risk_data, world_geojson, run_manifest = load_release()
+    manifest_path = RELEASE_DIR / "run_manifest.json"
+    release_version = manifest_path.stat().st_mtime_ns if manifest_path.is_file() else 0
+    risk_data, world_geojson, run_manifest = load_release(release_version)
 except FileNotFoundError as error:
     st.error(str(error))
-    st.code("uv run python -m outage_prediction build-legacy --config config/project.yaml")
+    st.code("uv run python -m outage_prediction build --config config/project.yaml")
     st.stop()
 
 st.title("全球停电相对风险分布")
 st.caption(
-    "气候变化与能源结构交互视角 · CMIP5 / RCP4.5 · 固定 2100 年 · "
+    "GIPT 2026 能源设施 · CMIP5 / RCP4.5 · 固定 2100 年 · "
     "风险得分并非停电发生概率"
 )
 
 map_event = st.plotly_chart(
-    build_map(risk_data, world_geojson),
+    build_interactive_map(risk_data, world_geojson),
     width="stretch",
     on_select="rerun",
     selection_mode="points",
@@ -252,7 +135,7 @@ selected = risk_data.loc[risk_data["iso3"].eq(selected_iso)].iloc[0]
 
 st.subheader(selected["country_name"])
 if selected["data_quality"] != "complete" or pd.isna(selected["risk_score"]):
-    st.info("该地区缺少完整的旧项目气候连续指标，因此不计算风险，也不会按零风险展示。")
+    st.info("该地区缺少完整的能源或气候输入，因此不计算风险，也不会按零风险展示。")
 else:
     metric_1, metric_2, metric_3 = st.columns(3)
     metric_1.metric("停电相对风险得分", f"{selected['risk_score']:.4f}")
@@ -277,9 +160,17 @@ else:
                 "连续干日": f"{selected['dry']:.1f} 天",
                 "制冷度日": f"{selected['cdd']:.1f} ℃·日",
                 "采暖度日": f"{selected['hdd']:.1f} ℃·日",
+                "光伏占追踪容量": f"{selected['pv_share']:.1%}",
+                "风电占追踪容量": f"{selected['wind_share']:.1%}",
+                "水电占追踪容量": f"{selected['hydro_share']:.1%}",
                 "干旱": "是" if selected["drought"] == 1 else "否",
                 "高温": "是" if selected["heat"] == 1 else "否",
                 "低温": "是" if selected["cold"] == 1 else "否",
+                "气候空间聚合": (
+                    "最近网格回退（小区域）"
+                    if bool(selected["climate_spatial_fallback"])
+                    else "国家内网格面积加权"
+                ),
             }
         )
     with composition:
@@ -317,6 +208,8 @@ with st.expander("数据来源与计算口径"):
         <b>气候指标：</b>{sources['climate']}，CMIP5 / RCP4.5，固定 2100 年。<br>
         <b>国家边界：</b>{sources['boundary']}<br>
         <b>阈值：</b>连续干日 &gt; 30 天；CDD &gt; 300 ℃·日；HDD &gt; 3000 ℃·日。<br>
+        <b>能源口径：</b>仅统计 GIPT 中 operating 设施；
+        占比以 GIPT 追踪的全部在运技术容量为分母。<br>
         <b>模型：</b>{run_manifest['risk_model']['name']} /
         {run_manifest['risk_model']['version']}。<br>
         该得分是固定回归公式的相对指标，不是 0–1 概率，也不构成实时停电预警。
