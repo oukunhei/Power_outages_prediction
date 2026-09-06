@@ -1,6 +1,8 @@
 # Power Outages Prediction
 
-基于气候变化与固定能源结构计算国家级停电相对风险，并通过 Streamlit 展示可选择年份的交互地图和风险构成。
+这是一个面向全球电力系统气候韧性的离线风险评估与可视化平台。项目融合 Global Energy Monitor（GEM）在运发电设施、Copernicus Climate Data Store 的 CMIP5/RCP4.5 气候情景和联合国国家边界，计算 2030–2100 年各国家或地区的停电相对风险。Streamlit 前端支持按年份查看全球交互地图、国家风险输入与贡献构成，并集中展示 2030、2050、2100 三个重点年份的高分辨率分布图。
+
+本项目当前使用固定回归公式作为风险引擎。结果用于比较不同国家和气候情景年份的相对风险，不是停电发生概率，也不构成实时停电预警。由于尚未接入逐年能源发展情景，所有年份暂时共用 GIPT August 2026 v3 的在运设施能源结构，因此年份变化表示“固定能源结构下的气候情景压力测试”。
 
 当前离线流水线：
 
@@ -15,27 +17,64 @@
 
 恢复过程、计算顺序及与2024年遗留表的数值对照记录在 [`CLIMATE_METHOD.md`](CLIMATE_METHOD.md)。
 
-## 运行
+## 快速启动前端
+
+仓库已经存在 `.venv` 且 `outputs/latest/` 已生成时，在 Linux 或 macOS 终端运行：
+
+```bash
+cd /ssd/yunxiou/Green_tech_Innovation/Power_outages_prediction
+.venv/bin/python -m streamlit run app/streamlit_app.py
+```
+
+启动成功后访问：
+
+```text
+http://localhost:8501
+```
+
+保持该终端窗口运行；按 `Ctrl+C` 停止前端。
+
+### 首次运行或重新生成数据
+
+如果缺少 `.venv`，先安装 `uv`，然后在项目目录执行：
+
+```bash
+uv sync --locked --all-groups
+```
+
+首次启动前，或者气候、能源数据及配置发生变化后，先重新构建 2030–2100 年发布数据：
+
+```bash
+uv run --frozen python -m outage_prediction build --config config/project.yaml
+```
+
+再启动前端：
+
+```bash
+uv run --frozen python -m streamlit run app/streamlit_app.py
+```
+
+### Windows PowerShell
 
 ```powershell
-# 1. 创建/同步隔离环境
+# 1. 首次运行时创建或同步隔离环境
 .\scripts\setup_env.ps1
 
-# 2. 构建全部发布数据
+# 2. 首次运行或数据变化后构建发布数据
 .\scripts\run_pipeline.ps1
 
 # 3. 启动前端
 .\scripts\run_app.ps1
 ```
 
-也可以直接运行：
+Windows 上也可以直接使用 `uv`：
 
 ```powershell
 uv run --frozen python -m outage_prediction build --config config/project.yaml
 uv run --frozen python -m streamlit run app/streamlit_app.py
 ```
 
-前端默认地址为 `http://localhost:8501`。用户可选择 2030–2100 的任意整数年份，2030、2050、2100 静态图也会同时展示。
+如果前端提示缺少 `country_risk.csv`、GeoJSON 或运行清单，请先执行数据构建命令。前端默认地址为 `http://localhost:8501`，支持选择 2030–2100 的任意整数年份，并可查看和下载 2030、2050、2100 三张静态图。
 
 ## 验证
 
