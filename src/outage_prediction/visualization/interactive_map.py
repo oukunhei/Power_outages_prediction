@@ -35,10 +35,18 @@ def _geometry_coordinates(
     return longitudes, latitudes
 
 
-def build_interactive_map(data: pd.DataFrame, geojson: dict[str, Any]) -> go.Figure:
+def build_interactive_map(
+    data: pd.DataFrame,
+    geojson: dict[str, Any],
+    color_limit: float | None = None,
+) -> go.Figure:
     risk_by_iso = data.set_index("iso3", drop=False)
     scored = data["risk_score"].dropna()
-    color_limit = max(float(scored.abs().max()), 1e-9)
+    color_limit = (
+        max(float(scored.abs().max()), 1e-9)
+        if color_limit is None
+        else max(float(color_limit), 1e-9)
+    )
     figure = go.Figure()
 
     for feature in geojson["features"]:

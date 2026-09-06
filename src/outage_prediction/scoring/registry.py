@@ -11,7 +11,7 @@ from outage_prediction.scoring.formula import FormulaRiskModel
 
 def create_risk_model(config: Mapping[str, object]) -> RiskModel:
     model_type = str(config.get("type", "formula"))
-    version = str(config.get("version", "legacy-formula-v1"))
+    version = str(config.get("version", "fixed-formula-v2-hdd3000"))
     if model_type == "formula":
         return FormulaRiskModel(version=version)
     if model_type == "machine_learning":

@@ -9,7 +9,11 @@ import pandas as pd
 import xarray as xr
 from shapely.geometry import box
 
-from outage_prediction.processing.climate import ClimateIndicator, build_climate_features
+from outage_prediction.processing.climate import (
+    ClimateIndicator,
+    build_climate_features,
+    build_climate_features_for_years,
+)
 
 
 def _write_indicator(
@@ -87,3 +91,35 @@ def test_country_aggregation_and_strict_thresholds(tmp_path: Path) -> None:
     assert row["cold"] == 0.0
     assert result.report["period"] == [2006, 2007]
 
+
+def test_multiple_years_are_emitted_with_confirmed_hdd_threshold(tmp_path: Path) -> None:
+    boundaries = gpd.GeoDataFrame(
+        {"iso3": ["AAA"], "boundary_name": ["Alpha"], "region_id": [0]},
+        geometry=[box(-20, -20, 20, 20)],
+        crs="EPSG:4326",
+    )
+    dry = _write_indicator(tmp_path, "dry.nc", "dry_var", "days", (40.0, 40.0))
+    cdd = _write_indicator(tmp_path, "cdd.nc", "cdd_var", "degC day", (301.0, 301.0))
+    hdd = _write_indicator(tmp_path, "hdd.nc", "hdd_var", "degC day", (3001.0, 3001.0))
+
+    result = build_climate_features_for_years(
+        indicators=[
+            ClimateIndicator(dry, "dry_var", "dry", ("day",)),
+            ClimateIndicator(cdd, "cdd_var", "cdd", ("degc", "day")),
+            ClimateIndicator(hdd, "hdd_var", "hdd", ("degc", "day")),
+        ],
+        boundaries=boundaries,
+        years=[2006, 2007],
+        expected_members=2,
+        expected_start_year=2006,
+        expected_end_year=2007,
+        thresholds={
+            "drought_days": 30.0,
+            "cooling_degree_days": 300.0,
+            "heating_degree_days": 3000.0,
+        },
+    )
+
+    assert result.features["climate_year"].tolist() == [2006, 2007]
+    assert result.features["cold"].tolist() == [0.0, 1.0]
+    assert result.report["year_country_rows"] == 2

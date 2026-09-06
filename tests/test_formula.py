@@ -7,7 +7,7 @@ import pandas as pd
 from outage_prediction.scoring.formula import FormulaRiskModel
 
 
-def test_afghanistan_reproduces_known_legacy_result() -> None:
+def test_formula_known_country_inputs() -> None:
     features = pd.DataFrame(
         {
             "drought": [1],

@@ -91,20 +91,39 @@ def _signed_description(value: float) -> str:
 try:
     manifest_path = RELEASE_DIR / "run_manifest.json"
     release_version = manifest_path.stat().st_mtime_ns if manifest_path.is_file() else 0
-    risk_data, world_geojson, run_manifest = load_release(release_version)
+    all_risk_data, world_geojson, run_manifest = load_release(release_version)
 except FileNotFoundError as error:
     st.error(str(error))
     st.code("uv run python -m outage_prediction build --config config/project.yaml")
     st.stop()
 
 st.title("全球停电相对风险分布")
+available_years = sorted(all_risk_data["climate_year"].astype(int).unique().tolist())
+default_year = int(run_manifest["default_prediction_year"])
+selected_year = st.select_slider(
+    "自定义预测年份",
+    options=available_years,
+    value=default_year,
+    help="可选择气候快照覆盖范围内已预计算的任一年份。",
+)
+risk_data = all_risk_data.loc[
+    all_risk_data["climate_year"].astype(int).eq(selected_year)
+].copy()
 st.caption(
-    "GIPT 2026 能源设施 · CMIP5 / RCP4.5 · 固定 2100 年 · "
+    f"GIPT 2026 在运能源设施（各年份固定） · CMIP5 / RCP4.5 · {selected_year} 年 · "
     "风险得分并非停电发生概率"
+)
+st.info(
+    "当前年份切换只改变气候情景输入；由于缺少逐年的未来能源结构情景，"
+    "光伏、风电和水电占比在所有年份均使用同一份GIPT在运设施快照。"
 )
 
 map_event = st.plotly_chart(
-    build_interactive_map(risk_data, world_geojson),
+    build_interactive_map(
+        risk_data,
+        world_geojson,
+        color_limit=float(run_manifest["risk_color_limit"]),
+    ),
     width="stretch",
     on_select="rerun",
     selection_mode="points",
@@ -205,11 +224,11 @@ with st.expander("数据来源与计算口径"):
         f"""
         <div class="source-note">
         <b>能源结构：</b>{sources['energy']}<br>
-        <b>气候指标：</b>{sources['climate']}，CMIP5 / RCP4.5，固定 2100 年。<br>
+        <b>气候指标：</b>{sources['climate']}，CMIP5 / RCP4.5，当前选择 {selected_year} 年。<br>
         <b>国家边界：</b>{sources['boundary']}<br>
         <b>阈值：</b>连续干日 &gt; 30 天；CDD &gt; 300 ℃·日；HDD &gt; 3000 ℃·日。<br>
         <b>能源口径：</b>仅统计 GIPT 中 operating 设施；
-        占比以 GIPT 追踪的全部在运技术容量为分母。<br>
+        占比以 GIPT 追踪的全部在运技术容量为分母，并在所有预测年份保持固定。<br>
         <b>模型：</b>{run_manifest['risk_model']['name']} /
         {run_manifest['risk_model']['version']}。<br>
         该得分是固定回归公式的相对指标，不是 0–1 概率，也不构成实时停电预警。
@@ -218,13 +237,20 @@ with st.expander("数据来源与计算口径"):
         unsafe_allow_html=True,
     )
 
-image_path = RELEASE_DIR / "power_outage_risk.png"
-if image_path.is_file():
-    with st.expander("静态地图"):
-        st.image(image_path, width="stretch")
-        st.download_button(
-            "下载 PNG",
-            data=image_path.read_bytes(),
-            file_name="power_outage_risk.png",
-            mime="image/png",
-        )
+with st.expander("2030 / 2050 / 2100 静态分布图"):
+    featured_years = [int(year) for year in run_manifest["featured_prediction_years"]]
+    tabs = st.tabs([f"{year} 年" for year in featured_years])
+    for tab, year in zip(tabs, featured_years, strict=True):
+        with tab:
+            image_path = RELEASE_DIR / run_manifest["static_maps"][str(year)]
+            if image_path.is_file():
+                st.image(image_path, width="stretch")
+                st.download_button(
+                    f"下载 {year} 年 PNG",
+                    data=image_path.read_bytes(),
+                    file_name=image_path.name,
+                    mime="image/png",
+                    key=f"download_static_map_{year}",
+                )
+            else:
+                st.warning(f"缺少 {year} 年静态地图，请重新运行数据构建命令。")

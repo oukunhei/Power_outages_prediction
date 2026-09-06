@@ -21,7 +21,7 @@ REQUIRED_FEATURES = (
 class FormulaRiskModel:
     """Deterministic implementation of the original Excel regression formula."""
 
-    version: str = "legacy-formula-v1"
+    version: str = "fixed-formula-v2-hdd3000"
     name: str = "fixed_regression_formula"
 
     def predict(self, features: pd.DataFrame) -> pd.DataFrame:

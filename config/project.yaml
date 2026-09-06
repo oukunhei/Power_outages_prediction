@@ -1,7 +1,13 @@
 project:
   title: 全球停电相对风险分布
   climate_scenario: CMIP5 / RCP4.5
-  climate_year: 2100
+  prediction_year_start: 2030
+  prediction_year_end: 2100
+  default_prediction_year: 2050
+  featured_prediction_years:
+    - 2030
+    - 2050
+    - 2100
 
 thresholds:
   drought_days: 30.0
@@ -10,7 +16,7 @@ thresholds:
 
 risk_model:
   type: formula
-  version: legacy-formula-v1
+  version: fixed-formula-v2-hdd3000
   artifact_path: null
 
 paths:
@@ -18,14 +24,11 @@ paths:
   climate_drought: data/climate/raw/annual_consecutive_dry_days/cdd_CMIP5_rcp45_yr_2006-2100.nc
   climate_cooling: data/climate/raw/annual_cooling_degree_days/cd_CMIP5_rcp45_yr_2006-2100.nc
   climate_heating: data/climate/raw/annual_heating_degree_days/hd_CMIP5_rcp45_yr_2006-2100.nc
-  legacy_parameters: data/legacy/parameters.xlsx
-  legacy_cooling: data/legacy/cdd_country.csv
-  legacy_heating: data/legacy/hdd_country.csv
-  legacy_drought: data/legacy/dry_country.csv
   world_boundaries: data/reference/world-administrative-boundaries.shp
   output_root: outputs
 
 energy:
+  release: GIPT August 2026 v3
   included_statuses:
     - operating
   share_denominator: all tracked operating power facilities
